@@ -1,6 +1,6 @@
 from django.apps import AppConfig
 
 
-class FaceRecognitionConfig(AppConfig):
+class FacialAuthAppConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
-    name = 'face_recognition'
+    name = 'facial_auth_app'
