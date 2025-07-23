@@ -1,0 +1,22 @@
+databases:
+  - name: facial-auth-db
+    plan: free
+    databaseName: faceauthdb
+    user: jmv-admin
+
+services:
+  - type: web
+    plan: free
+    name: facial-auth-api
+    runtime: python
+    buildCommand: './build.sh'
+    startCommand: 'python -m gunicorn mysite.asgi:application -k uvicorn.workers.UvicornWorker'
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: facial-auth-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: WEB_CONCURRENCY
+        value: 4

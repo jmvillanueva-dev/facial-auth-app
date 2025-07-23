@@ -69,7 +69,59 @@ class FacialRecognitionService:
 
     @staticmethod
     def create_facial_profile(user, image_file):
-        """Create facial recognition profile for user"""
+        """Create facial recognition profile for FaceAuth users"""
+        try:
+            # Save the image file temporarily
+            image_np = FacialRecognitionService.process_uploaded_image(image_file)
+            if image_np is None:
+                return None
+
+            # Get face encoding
+            face_encodings = face_recognition.face_encodings(image_np)
+            if not face_encodings:
+                return None
+
+            encoding_bytes = face_encodings[0].tobytes()
+
+            for profile in FacialRecognitionProfile.objects.filter(is_active=True):
+                match, _ = FacialRecognitionService.compare_faces(profile.face_encoding, encoding_bytes)
+                if match:
+                    raise FaceAlreadyRegisteredError(
+                        "Este rostro ya está registrado en nuestro sistema. "
+                        "Cada usuario debe tener un rostro único."
+                    )
+
+            # Create profile
+            profile = FacialRecognitionProfile.objects.create(
+                user=user, face_encoding=face_encodings[0].tobytes()
+            )
+
+            # Save the image
+            buffer = BytesIO()
+            img_pil = Image.fromarray(cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR))
+            img_pil.save(buffer, format="JPEG")
+            profile.face_image.save(
+                f"{user.username}_face.jpg",
+                InMemoryUploadedFile(
+                    buffer,
+                    None,
+                    f"{user.username}_face.jpg",
+                    "image/jpeg",
+                    buffer.tell,
+                    None,
+                ),
+            )
+
+            return profile
+        except FaceAlreadyRegisteredError as e:
+            raise
+        except Exception as e:
+            print(f"Error creating facial profile: {str(e)}")
+            return None
+        
+    @staticmethod
+    def create_facial_profile_endusers(user, image_file):
+        """Create facial recognition profile for ClientApp users"""
         try:
             # Save the image file temporarily
             image_np = FacialRecognitionService.process_uploaded_image(image_file)
