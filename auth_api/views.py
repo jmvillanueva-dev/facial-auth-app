@@ -2,6 +2,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions, generics, serializers
 from rest_framework_simplejwt.tokens import RefreshToken
+from django.shortcuts import render
 from django.contrib.auth import authenticate
 from django.core.exceptions import ValidationError
 from facial_auth_app.services import FacialRecognitionService, FaceAlreadyRegisteredError
@@ -15,6 +16,10 @@ from auth_api.serializers import (
     EndUserRegistrationSerializer,
 )
 import face_recognition
+
+
+def home(request):
+    return render(request, "home.html")
 
 
 def get_tokens_for_user(user):

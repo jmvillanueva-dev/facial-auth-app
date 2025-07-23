@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="es">
+<head>
+    <meta charset="utf-8">
+    <title>Face Auth API | Autenticación Facial Segura</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- Favicon -->
+    <link rel="icon" href="https://i.postimg.cc/ZnNcRGtp/logo-face-auth.png" type="image/png">
+    <meta name="description" content="API RESTful de reconocimiento facial para Django. Segura, rápida y lista para producción.">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #4F39F6;
+            --dark: #0d1117;
+            --light: #f6f8fa;
+            --text: #24292e;
+            --muted: #586069;
+            --radius: 8px;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', sans-serif;
+            color: var(--text);
+            background: var(--light);
+            line-height: 1.6;
+        }
+        header {
+            background: linear-gradient(135deg, var(--dark) 0%, #161b22 100%);
+            color: #fff;
+            padding: 120px 20px 80px;
+            text-align: center;
+        }
+        header h1 {
+            font-size: clamp(2.2rem, 5vw, 3.5rem);
+            font-weight: 700;
+            margin-bottom: 16px;
+            letter-spacing: -1px;
+        }
+        header p {
+            font-size: clamp(1rem, 2.5vw, 1.25rem);
+            max-width: 600px;
+            margin: 0 auto 40px;
+            opacity: .8;
+        }
+        .btn {
+            display: inline-block;
+            margin: 8px;
+            padding: 14px 32px;
+            border: none;
+            border-radius: var(--radius);
+            font-size: 1rem;
+            font-weight: 600;
+            text-decoration: none;
+            cursor: pointer;
+            transition: transform .2s, box-shadow .2s;
+        }
+        .btn-primary {
+            background: var(--primary);
+            color: #fff;
+        }
+        .btn-outline {
+            background: transparent;
+            color: var(--primary);
+            border: 2px solid var(--primary);
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(0, 102, 255, .25);
+        }
+        section {
+            padding: 80px 20px;
+            max-width: 1100px;
+            margin: 0 auto;
+        }
+        .grid {
+            display: grid;
+            gap: 40px;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        }
+        .card {
+            background: #fff;
+            border-radius: var(--radius);
+            padding: 36px 28px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, .05);
+            transition: transform .3s;
+        }
+        .card:hover {
+            transform: translateY(-4px);
+        }
+        .card h3 {
+            margin-bottom: 12px;
+            font-size: 1.25rem;
+            font-weight: 600;
+        }
+        .card p {
+            color: var(--muted);
+            font-size: .95rem;
+        }
+        footer {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--muted);
+            font-size: .875rem;
+        }
+        /* Animaciones suaves */
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        header, .card {
+            animation: fadeInUp .6s both;
+        }
+        .card:nth-child(2) { animation-delay: .1s; }
+        .card:nth-child(3) { animation-delay: .2s; }
+        .card:nth-child(4) { animation-delay: .3s; }
+    </style>
+</head>
+
+<body>
+    <header>
+        <img src="https://i.postimg.cc/WtRkHzyJ/logo-face-auth.png" alt="Face Auth API Logo" style="width: 120px; margin-bottom: 20px;">
+        <h1>Face Auth API</h1>
+        <p>Autenticación biométrica de última generación para autenticación de rostros en tus aplicaciones. Integración en minutos.</p>
+        <a class="btn btn-primary" href="/admin/">Panel de Admin</a>
+        <a class="btn btn-outline" href="/api/docs/">Documentación API</a>
+    </header>
+
+    <section>
+        <div class="grid">
+            <div class="card">
+                <h3>🚀 Alta precisión</h3>
+                <p>Modelos entrenados con más de 10 M de rostros para detección robusta en cualquier entorno.</p>
+            </div>
+            <div class="card">
+                <h3>🔐 Seguridad militar</h3>
+                <p>Encriptación AES-256 y protección anti-spoofing con análisis 3D y detección de vida.</p>
+            </div>
+            <div class="card">
+                <h3>⚡ Latencia < 100 ms</h3>
+                <p>Autenticación en tiempo real gracias a inferencia optimizada en GPU y CPU.</p>
+            </div>
+            <div class="card">
+                <h3>🧩 Integración sencilla</h3>
+                <p>SDK para Django y Flask, webhooks y documentación OpenAPI/Swagger completa.</p>
+            </div>
+        </div>
+    </section>
+
+    <footer>
+        © 2025 FaceAuth API — Desarrollado por Estudiantes de la EPN
+    </footer>
+</body>
+</html>
