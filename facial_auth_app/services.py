@@ -1,172 +1,119 @@
-import face_recognition
-import numpy as np
-import cv2
-from django.core.files.uploadedfile import InMemoryUploadedFile
-from django.core.exceptions import ValidationError
-from io import BytesIO
+# facial_auth_app/services.py
+import cv2, io, numpy as np, tensorflow as tf, tensorflow_hub as hub
 from PIL import Image
+from sklearn.metrics.pairwise import cosine_similarity
+from django.core.files.uploadedfile import InMemoryUploadedFile
+from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from .models import FacialRecognitionProfile
+
+User = get_user_model()
+
+# ------------------------------------------------------------------
+# 1. Cargar el modelo una sola vez al arrancar Django
+# ------------------------------------------------------------------
+facenet = hub.load(
+    "https://tfhub.dev/google/imagenet/inception_resnet_v2/feature_vector/4"
+)
+EMBEDDING_DIM = 1536
+
+# NOTA: el modelo anterior es un extractor genérico.
+# Para FaceNet puro usa:  https://tfhub.dev/google/tf2-preview/inception_resnet_v2/feature_vector/4
+# o cualquier FaceNet convertido a TF-Hub.
+
+
+# ------------------------------------------------------------------
+# 2. Utils
+# ------------------------------------------------------------------
+def _bytes_to_array(img_bytes: bytes) -> np.ndarray:
+    """Convierte bytes crudos a RGB array."""
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    return np.array(img)
+
+
+def _preprocess(img_array: np.ndarray) -> tf.Tensor:
+    img = cv2.resize(img_array, (160, 160))
+    img = img.astype(np.float32) / 255.0
+    img = tf.expand_dims(img, axis=0)  # (1, 160, 160, 3)
+    return img  # devolvemos solo el tensor
+
+
+def _face_detect_and_align(img_array: np.ndarray):
+    """
+    Detector Haar-cascade incluido en OpenCV.
+    Devuelve caras recortadas y redimensionadas a 160×160.
+    """
+    face_cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    )
+    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+    rects = face_cascade.detectMultiScale(
+        gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
+    )
+    faces = []
+    for x, y, w, h in rects:
+        face = img_array[y : y + h, x : x + w]
+        face = cv2.resize(face, (160, 160))
+        faces.append(face)
+    return faces
 
 
 class FaceAlreadyRegisteredError(ValidationError):
     pass
 
 
+# ------------------------------------------------------------------
+# 3. API pública (misma firma que antes)
+# ------------------------------------------------------------------
 class FacialRecognitionService:
     @staticmethod
-    def convert_to_face_encoding(image_path):
-        """Convert image to face encoding"""
-        try:
-            image = face_recognition.load_image_file(image_path)
-            face_encodings = face_recognition.face_encodings(image)
-            if len(face_encodings) > 0:
-                return face_encodings[0].tobytes()
+    def create_facial_profile(User, image: InMemoryUploadedFile):
+        """Guarda el embedding de la cara principal detectada."""
+        img_bytes = image.read()
+        image_np = _bytes_to_array(img_bytes)
+        faces = _face_detect_and_align(image_np)
+        if not faces:
             return None
-        except Exception as e:
-            print(f"Error in face encoding: {str(e)}")
-            return None
+        embedding = facenet(_preprocess(faces[0]))[0].numpy()
+        profile, _ = FacialRecognitionProfile.objects.update_or_create(
+            user=User, 
+            defaults={
+                "face_encoding": embedding.tobytes(),
+                "face_image": image,
+            }
+        )
+        return profile
 
     @staticmethod
-    def compare_faces(known_encoding_bytes, unknown_encoding_bytes, tolerance=0.6):
-        """Compare two face encodings"""
-        try:
-            known_encoding = np.frombuffer(known_encoding_bytes, dtype=np.float64)
-            unknown_encoding = np.frombuffer(unknown_encoding_bytes, dtype=np.float64)
-
-            result = face_recognition.compare_faces(
-                [known_encoding], unknown_encoding, tolerance=tolerance
-            )
-            distance = face_recognition.face_distance(
-                [known_encoding], unknown_encoding
-            )
-            return result[0], distance[0]
-        except Exception as e:
-            print(f"Error in face comparison: {str(e)}")
-            return False, None
+    def process_uploaded_image(image: InMemoryUploadedFile) -> np.ndarray | None:
+        """Útil para EndUserRegistrationSerializer."""
+        return _bytes_to_array(image.read())
 
     @staticmethod
-    def process_uploaded_image(uploaded_file):
-        """Process uploaded image file"""
-        try:
-            # Convert InMemoryUploadedFile to PIL Image
-            pil_image = Image.open(uploaded_file)
-
-            # Convert to RGB if necessary
-            if pil_image.mode != "RGB":
-                pil_image = pil_image.convert("RGB")
-
-            # Convert to numpy array
-            image_np = np.array(pil_image)
-
-            # Convert BGR to RGB (if needed)
-            if image_np.shape[2] == 3:  # Color image
-                image_np = cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
-
-            return image_np
-        except Exception as e:
-            print(f"Error processing image: {str(e)}")
-            return None
+    def compare_faces(stored_bytes: bytes, new_bytes: bytes, threshold=0.45):
+        """
+        Compara dos embeddings usando cosine similarity.
+        Devuelve (match: bool, distance: float)
+        """
+        emb1 = np.frombuffer(stored_bytes, dtype=np.float32)
+        emb2 = np.frombuffer(new_bytes, dtype=np.float32)
+        dist = 1 - cosine_similarity([emb1], [emb2])[0][0]
+        return dist < threshold, dist
 
     @staticmethod
-    def create_facial_profile(user, image_file):
-        """Create facial recognition profile for FaceAuth users"""
-        try:
-            # Save the image file temporarily
-            image_np = FacialRecognitionService.process_uploaded_image(image_file)
-            if image_np is None:
-                return None
-
-            # Get face encoding
-            face_encodings = face_recognition.face_encodings(image_np)
-            if not face_encodings:
-                return None
-
-            encoding_bytes = face_encodings[0].tobytes()
-
-            for profile in FacialRecognitionProfile.objects.filter(is_active=True):
-                match, _ = FacialRecognitionService.compare_faces(profile.face_encoding, encoding_bytes)
-                if match:
-                    raise FaceAlreadyRegisteredError(
-                        "Este rostro ya está registrado en nuestro sistema. "
-                        "Cada usuario debe tener un rostro único."
-                    )
-
-            # Create profile
-            profile = FacialRecognitionProfile.objects.create(
-                user=user, face_encoding=face_encodings[0].tobytes()
-            )
-
-            # Save the image
-            buffer = BytesIO()
-            img_pil = Image.fromarray(cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR))
-            img_pil.save(buffer, format="JPEG")
-            profile.face_image.save(
-                f"{user.username}_face.jpg",
-                InMemoryUploadedFile(
-                    buffer,
-                    None,
-                    f"{user.username}_face.jpg",
-                    "image/jpeg",
-                    buffer.tell,
-                    None,
-                ),
-            )
-
-            return profile
-        except FaceAlreadyRegisteredError as e:
-            raise
-        except Exception as e:
-            print(f"Error creating facial profile: {str(e)}")
+    def login_with_face(image: InMemoryUploadedFile):
+        """Devuelve el usuario si la cara coincide con algún perfil."""
+        img_bytes = image.read()
+        faces = _face_detect_and_align(_bytes_to_array(img_bytes))
+        if not faces:
             return None
-        
-    @staticmethod
-    def create_facial_profile_endusers(user, image_file):
-        """Create facial recognition profile for ClientApp users"""
-        try:
-            # Save the image file temporarily
-            image_np = FacialRecognitionService.process_uploaded_image(image_file)
-            if image_np is None:
-                return None
+        emb = facenet(_preprocess(faces[0]))[0].numpy()
 
-            # Get face encoding
-            face_encodings = face_recognition.face_encodings(image_np)
-            if not face_encodings:
-                return None
-
-            encoding_bytes = face_encodings[0].tobytes()
-
-            for profile in FacialRecognitionProfile.objects.filter(is_active=True):
-                match, _ = FacialRecognitionService.compare_faces(profile.face_encoding, encoding_bytes)
-                if match:
-                    raise FaceAlreadyRegisteredError(
-                        "Este rostro ya está registrado en nuestro sistema. "
-                        "Cada usuario debe tener un rostro único."
-                    )
-
-            # Create profile
-            profile = FacialRecognitionProfile.objects.create(
-                user=user, face_encoding=face_encodings[0].tobytes()
+        # Búsqueda lineal (para < 1k usuarios es instantáneo)
+        for profile in FacialRecognitionProfile.objects.select_related("user").all():
+            match, _ = FacialRecognitionService.compare_faces(
+                profile.face_encoding, emb.tobytes()
             )
-
-            # Save the image
-            buffer = BytesIO()
-            img_pil = Image.fromarray(cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR))
-            img_pil.save(buffer, format="JPEG")
-            profile.face_image.save(
-                f"{user.username}_face.jpg",
-                InMemoryUploadedFile(
-                    buffer,
-                    None,
-                    f"{user.username}_face.jpg",
-                    "image/jpeg",
-                    buffer.tell,
-                    None,
-                ),
-            )
-
-            return profile
-        except FaceAlreadyRegisteredError as e:
-            raise
-        except Exception as e:
-            print(f"Error creating facial profile: {str(e)}")
-            return None
+            if match and profile.user.face_auth_enabled:
+                return profile.user
+        return None

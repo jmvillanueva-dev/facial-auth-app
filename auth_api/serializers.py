@@ -7,8 +7,8 @@ from facial_auth_app.services import (
     FacialRecognitionService,
     FaceAlreadyRegisteredError,
 )
+from facial_auth_app.models import FacialRecognitionProfile
 from auth_api.models import ClientApp, EndUser
-import face_recognition
 
 User = get_user_model()
 
@@ -49,11 +49,8 @@ class RegistrationSerializer(serializers.ModelSerializer):
             "password_conf",
             "face_image",
         ]
-        extra_kwargs = {
-            "password": {"write_only": True},
-        }
+        extra_kwargs = {"password": {"write_only": True}}
 
-    # ----- password validation -----
     def validate(self, data):
         try:
             validate_password(data["password"])
@@ -75,25 +72,18 @@ class RegistrationSerializer(serializers.ModelSerializer):
                     password_errors.append("La contraseña no puede ser solo numérica.")
                 else:
                     password_errors.append(error)
-
             raise serializers.ValidationError({"password": password_errors})
-
         return data
 
-    # ----- create user + facial profile atomically -----
     def create(self, validated_data):
-        from facial_auth_app.services import FacialRecognitionService
         from django.db import transaction
 
-        # Genera username único a partir del email
         base_username = validated_data["email"].split("@")[0]
         username = base_username
         counter = 1
-
         while User.objects.filter(username=username).exists():
             username = f"{base_username}{counter}"
             counter += 1
-
         validated_data["username"] = username
 
         face_image = validated_data.pop("face_image")
@@ -101,9 +91,7 @@ class RegistrationSerializer(serializers.ModelSerializer):
         password = validated_data.pop("password")
 
         with transaction.atomic():
-            user = User.objects.create(
-                **validated_data,
-            )
+            user = User.objects.create(**validated_data)
             user.set_password(password)
             user.save()
 
@@ -112,6 +100,20 @@ class RegistrationSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"face_image": "Could not process face image"}
                 )
+
+            new_encoding = profile.face_encoding
+            for existing_profile in FacialRecognitionProfile.objects.filter(
+                is_active=True
+            ).exclude(user=user):
+                match, _ = FacialRecognitionService.compare_faces(
+                    existing_profile.face_encoding, new_encoding
+                )
+                if match:
+                    # Rollback: borramos el usuario y levantamos la excepción
+                    user.delete()
+                    raise FaceAlreadyRegisteredError(
+                        "Este rostro ya está registrado por otro usuario."
+                    )
 
             user.face_auth_enabled = True
             user.save(update_fields=["face_auth_enabled"])
@@ -147,18 +149,17 @@ class EndUserRegistrationSerializer(serializers.ModelSerializer):
         if image_np is None:
             raise serializers.ValidationError("No se pudo procesar la imagen.")
 
-        face_encodings = face_recognition.face_encodings(image_np)
-        if not face_encodings:
+        # --- NUEVA LÓGICA: obtenemos embeddings con el nuevo servicio ---
+        faces = FacialRecognitionService._face_detect_and_align(image_np)
+        if not faces:
             raise serializers.ValidationError("No se detectó ningún rostro.")
 
-        encoding_bytes = face_encodings[0].tobytes()
-
-        # Verificar si el usuario existe y está eliminado
+        embedding = FacialRecognitionService._embedding(faces[0])
+        encoding_bytes = embedding.tobytes()
 
         existing = EndUser.objects.filter(app=app, email=email).first()
         if existing:
             if existing.deleted:
-                # Reactivar usuario
                 existing.deleted = False
                 existing.full_name = validated_data.get("full_name")
                 existing.role = validated_data.get("role")
@@ -179,8 +180,6 @@ class EndUserRegistrationSerializer(serializers.ModelSerializer):
                     "Este rostro ya está registrado para esta aplicación."
                 )
 
-        # Crear nuevo usuario
         validated_data["face_encoding"] = encoding_bytes
         validated_data["app"] = app
         return EndUser.objects.create(**validated_data)
-

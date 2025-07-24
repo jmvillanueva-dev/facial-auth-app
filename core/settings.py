@@ -30,7 +30,12 @@ SECRET_KEY = os.environ.get("SECRET_KEY", default="your secret key")
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = "RAILWAY" not in os.environ
 
-ALLOWED_HOSTS = ["localhost", "127.0.0.1", "facial-auth-api-production.up.railway.app"]
+ALLOWED_HOSTS = ["localhost", "127.0.0.1",]
+
+railway_host = os.getenv("RAILWAY_PUBLIC_DOMAIN")
+if railway_host:
+    ALLOWED_HOSTS.append(railway_host)
+
 
 # Application definition
 
