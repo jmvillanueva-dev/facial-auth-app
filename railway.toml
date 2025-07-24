@@ -2,4 +2,4 @@
 command = "pip install -r requirements.txt"
 
 [deploy]
-startCommand = "uvicorn mysite.asgi:application --host 0.0.0.0 --port $PORT"
+startCommand = "gunicorn core.wsgi:application --bind 0.0.0.0:$PORT"
