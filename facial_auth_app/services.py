@@ -7,6 +7,9 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from .models import FacialRecognitionProfile
 
+print("DEBUG: Starting import of services.py")
+
+
 User = get_user_model()
 
 MODEL_DIR = os.path.abspath("tf_models")
@@ -15,21 +18,25 @@ os.environ["TFHUB_CACHE_DIR"] = MODEL_DIR
 # ------------------------------------------------------------------
 # 1. Cargar modelos una sola vez al arrancar Django
 # ------------------------------------------------------------------
-# Modelo de DETECCIÓN facial: Usamos el modelo que proporcionaste (Faster R-CNN).
-# Su propósito es encontrar las caras en una imagen.
-face_detector = hub.load(
-    "https://tfhub.dev/tensorflow/faster_rcnn/resnet101_v1_640x640/1"
-)
+print("DEBUG: About to load face_detector model.")
+try:
+    face_detector = hub.load(
+        "https://tfhub.dev/tensorflow/faster_rcnn/resnet101_v1_640x640/1"
+    )
+    print("DEBUG: face_detector model loaded successfully.")
+except Exception as e:
+    print(f"ERROR: Failed to load face_detector model. Exception: {e}")
 
-# Modelo de RECONOCIMIENTO facial: Usamos un extractor de características
-# que puede servir como modelo de embeddings.
-# MANTENEMOS EL MISMO MODELO, PERO CAMBIAMOS PREPROCESAMIENTO Y UMBRAL.
-embedding_model = hub.load(
-    "https://tfhub.dev/google/imagenet/inception_resnet_v2/feature_vector/4"
-)
-EMBEDDING_DIM = 1536  # Dimensión del embedding para el modelo InceptionResNetV2.
+print("DEBUG: About to load embedding_model.")
+try:
+    embedding_model = hub.load(
+        "https://tfhub.dev/google/imagenet/inception_resnet_v2/feature_vector/4"
+    )
+    print("DEBUG: embedding_model loaded successfully.")
+except Exception as e:
+    print(f"ERROR: Failed to load embedding_model. Exception: {e}")
 
-
+EMBEDDING_DIM = 1536
 # ------------------------------------------------------------------
 # 2. Utils
 # ------------------------------------------------------------------
@@ -192,3 +199,5 @@ class FacialRecognitionService:
             if match and profile.user.face_auth_enabled:
                 return profile.user
         return None
+
+print("DEBUG: services.py module loaded completely.")
