@@ -186,18 +186,21 @@ REST_FRAMEWORK = {
 
 # CORS Settings
 CORS_ALLOWED_ORIGINS = [
-    "https://facial-auth-api-production.up.railway.app", 
     "https://facial-auth-website.vercel.app",
+    "https://facial-auth-api-production.up.railway.app",
     "http://localhost:5173",
     "http://127.0.0.1:3000",
+    "http://127.0.0.1:5500",
 ]
 
 CORS_ALLOW_CREDENTIALS = True
 
 CSRF_TRUSTED_ORIGINS = [
+    "https://facial-auth-website.vercel.app",
     "https://facial-auth-api-production.up.railway.app",
     "http://localhost:8000",
     "http://127.0.0.1:8000",
+    "http://127.0.0.1:5500",
 ]
 
 # Configuración de sesión
