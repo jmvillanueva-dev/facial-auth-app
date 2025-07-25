@@ -1,4 +1,4 @@
-# facial_auth_app/services.py
+import os
 import cv2, io, numpy as np, tensorflow as tf, tensorflow_hub as hub
 from PIL import Image
 from sklearn.metrics.pairwise import cosine_similarity
@@ -8,6 +8,9 @@ from django.core.exceptions import ValidationError
 from .models import FacialRecognitionProfile
 
 User = get_user_model()
+
+MODEL_DIR = os.path.abspath("tf_models")
+os.environ["TFHUB_CACHE_DIR"] = MODEL_DIR  
 
 # ------------------------------------------------------------------
 # 1. Cargar modelos una sola vez al arrancar Django
@@ -118,7 +121,7 @@ class FaceAlreadyRegisteredError(ValidationError):
 # 3. API pública
 # ------------------------------------------------------------------
 class FacialRecognitionService:
-    DEFAULT_THRESHOLD = 0.20
+    DEFAULT_THRESHOLD = 0.18
 
     @staticmethod
     def create_facial_profile(user_instance, image: InMemoryUploadedFile):

@@ -1,5 +1,5 @@
 [build]
-command = "pip install -r requirements.txt"
+command = "pip install -r requirements.txt && python download_models.py && python manage.py collectstatic --noinput"
 
 [deploy]
-startCommand = "gunicorn core.wsgi:application --bind 0.0.0.0:$PORT"
+startCommand = "TFHUB_CACHE_DIR=./tf_models gunicorn core.wsgi:application --bind 0.0.0.0:$PORT --preload --workers 2 --timeout 120"

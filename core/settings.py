@@ -49,7 +49,7 @@ LOGGING = {
     },
 }
 
-ALLOWED_HOSTS = ["localhost", "127.0.0.1",]
+ALLOWED_HOSTS = ["*"]
 
 railway_host = os.getenv("RAILWAY_PUBLIC_DOMAIN")
 if railway_host:
@@ -191,6 +191,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:3000",
     "http://127.0.0.1:5500",
+    "https://j5plsg6f-5173.use2.devtunnels.ms",
 ]
 
 CORS_ALLOW_CREDENTIALS = True
@@ -201,6 +202,7 @@ CSRF_TRUSTED_ORIGINS = [
     "http://localhost:8000",
     "http://127.0.0.1:8000",
     "http://127.0.0.1:5500",
+    "https://j5plsg6f-5173.use2.devtunnels.ms",
 ]
 
 # Configuración de sesión
