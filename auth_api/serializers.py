@@ -6,6 +6,10 @@ from django.core.exceptions import ValidationError
 from facial_auth_app.services import (
     FacialRecognitionService,
     FaceAlreadyRegisteredError,
+    _bytes_to_array,
+    _face_detect_and_align,
+    _preprocess_for_embedding,
+    embedding_model,
 )
 from facial_auth_app.models import FacialRecognitionProfile
 from auth_api.models import ClientApp, EndUser
@@ -73,10 +77,31 @@ class RegistrationSerializer(serializers.ModelSerializer):
                 else:
                     password_errors.append(error)
             raise serializers.ValidationError({"password": password_errors})
+
+        # Adición: Validación de la imagen facial aquí mismo
+        face_image = data.get("face_image")
+        if face_image:
+            img_np = _bytes_to_array(face_image.read())
+            faces = _face_detect_and_align(img_np)
+            if not faces:
+                raise serializers.ValidationError(
+                    {
+                        "face_image": "No se detectó ningún rostro en la imagen proporcionada."
+                    }
+                )
+            # Restablece el puntero del archivo para que la imagen se pueda leer nuevamente en `create`
+            face_image.seek(0)
+        else:
+            raise serializers.ValidationError(
+                {"face_image": "Se requiere una imagen facial."}
+            )
+
         return data
 
     def create(self, validated_data):
         from django.db import transaction
+
+        print("DEBUG: Iniciando creación del usuario")
 
         base_username = validated_data["email"].split("@")[0]
         username = base_username
@@ -95,10 +120,13 @@ class RegistrationSerializer(serializers.ModelSerializer):
             user.set_password(password)
             user.save()
 
+            # Llama a create_facial_profile para manejar la detección y embedding
             profile = FacialRecognitionService.create_facial_profile(user, face_image)
             if not profile:
                 raise serializers.ValidationError(
-                    {"face_image": "Could not process face image"}
+                    {
+                        "face_image": "No se pudo procesar la imagen facial para el perfil."
+                    }
                 )
 
             new_encoding = profile.face_encoding
@@ -144,17 +172,20 @@ class EndUserRegistrationSerializer(serializers.ModelSerializer):
         app = self.context.get("app")
         email = validated_data.get("email")
 
-        # Procesar imagen
-        image_np = FacialRecognitionService.process_uploaded_image(face_image)
-        if image_np is None:
-            raise serializers.ValidationError("No se pudo procesar la imagen.")
+        # --- Flujo actualizado para obtener embeddings ---
+        # 1. Convertir bytes a array de numpy
+        image_np = _bytes_to_array(face_image.read())
 
-        # --- NUEVA LÓGICA: obtenemos embeddings con el nuevo servicio ---
-        faces = FacialRecognitionService._face_detect_and_align(image_np)
+        # 2. Detectar caras
+        faces = _face_detect_and_align(image_np)
         if not faces:
-            raise serializers.ValidationError("No se detectó ningún rostro.")
+            raise serializers.ValidationError(
+                "No se detectó ningún rostro en la imagen."
+            )
 
-        embedding = FacialRecognitionService._embedding(faces[0])
+        # 3. Preprocesar la cara para el modelo de embedding y generar el embedding
+        processed_face = _preprocess_for_embedding(faces[0])
+        embedding = embedding_model(processed_face)[0].numpy()
         encoding_bytes = embedding.tobytes()
 
         existing = EndUser.objects.filter(app=app, email=email).first()
@@ -163,7 +194,9 @@ class EndUserRegistrationSerializer(serializers.ModelSerializer):
                 existing.deleted = False
                 existing.full_name = validated_data.get("full_name")
                 existing.role = validated_data.get("role")
-                existing.face_encoding = encoding_bytes
+                existing.face_encoding = (
+                    encoding_bytes  # Actualizar el encoding si el usuario es reactivado
+                )
                 existing.password = validated_data.get("password")
                 existing.save()
                 return existing

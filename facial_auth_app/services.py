@@ -10,16 +10,21 @@ from .models import FacialRecognitionProfile
 User = get_user_model()
 
 # ------------------------------------------------------------------
-# 1. Cargar el modelo una sola vez al arrancar Django
+# 1. Cargar modelos una sola vez al arrancar Django
 # ------------------------------------------------------------------
-facenet = hub.load(
+# Modelo de DETECCIÓN facial: Usamos el modelo que proporcionaste (Faster R-CNN).
+# Su propósito es encontrar las caras en una imagen.
+face_detector = hub.load(
+    "https://tfhub.dev/tensorflow/faster_rcnn/resnet101_v1_640x640/1"
+)
+
+# Modelo de RECONOCIMIENTO facial: Usamos un extractor de características
+# que puede servir como modelo de embeddings.
+# MANTENEMOS EL MISMO MODELO, PERO CAMBIAMOS PREPROCESAMIENTO Y UMBRAL.
+embedding_model = hub.load(
     "https://tfhub.dev/google/imagenet/inception_resnet_v2/feature_vector/4"
 )
-EMBEDDING_DIM = 1536
-
-# NOTA: el modelo anterior es un extractor genérico.
-# Para FaceNet puro usa:  https://tfhub.dev/google/tf2-preview/inception_resnet_v2/feature_vector/4
-# o cualquier FaceNet convertido a TF-Hub.
+EMBEDDING_DIM = 1536  # Dimensión del embedding para el modelo InceptionResNetV2.
 
 
 # ------------------------------------------------------------------
@@ -31,30 +36,77 @@ def _bytes_to_array(img_bytes: bytes) -> np.ndarray:
     return np.array(img)
 
 
-def _preprocess(img_array: np.ndarray) -> tf.Tensor:
-    img = cv2.resize(img_array, (160, 160))
-    img = img.astype(np.float32) / 255.0
-    img = tf.expand_dims(img, axis=0)  # (1, 160, 160, 3)
-    return img  # devolvemos solo el tensor
+def _preprocess_for_detection(img_array: np.ndarray) -> tf.Tensor:
+    """
+    Preprocesa la imagen para el modelo de detección (Faster R-CNN).
+    Esperará una imagen redimensionada a 640x640 y valores en [0, 255] (dtype=uint8).
+    """
+    img = cv2.resize(img_array, (640, 640))
+    # img = img.astype(np.float32) # ¡Esta línea ya la eliminaste!
+    img = tf.expand_dims(img, axis=0)
+    return img
+
+
+def _preprocess_for_embedding(img_array: np.ndarray) -> tf.Tensor:
+    """
+    Preprocesa la imagen para el modelo de embedding (InceptionResNetV2).
+    Espera una imagen redimensionada a 299x299 y valores en [-1, 1].
+    """
+    img = cv2.resize(img_array, (299, 299))
+    # CORRECCIÓN: Normalizar de [0, 255] a [-1, 1] para InceptionResNetV2
+    img = (
+        img.astype(np.float32) / 127.5 - 1.0
+    )  # <-- ¡Línea corregida para rango [-1, 1]!
+    img = tf.expand_dims(img, axis=0)
+    return img
 
 
 def _face_detect_and_align(img_array: np.ndarray):
     """
-    Detector Haar-cascade incluido en OpenCV.
-    Devuelve caras recortadas y redimensionadas a 160×160.
+    Detecta caras usando el modelo `face_detector`.
+    Devuelve los rostros recortados.
     """
-    face_cascade = cv2.CascadeClassifier(
-        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-    )
-    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-    rects = face_cascade.detectMultiScale(
-        gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
-    )
+    preprocessed_img = _preprocess_for_detection(img_array)
+
+    detections = face_detector(preprocessed_img)
+
+    # Es crucial que estas claves existan en la salida del modelo
+    if "detection_boxes" not in detections or "detection_scores" not in detections:
+        # Podrías loggear esto para depuración
+        # print("Advertencia: Claves 'detection_boxes' o 'detection_scores' no encontradas en la salida del detector.")
+        return []
+
+    boxes = detections["detection_boxes"][0].numpy()
+    scores = detections["detection_scores"][0].numpy()
+
     faces = []
-    for x, y, w, h in rects:
-        face = img_array[y : y + h, x : x + w]
-        face = cv2.resize(face, (160, 160))
-        faces.append(face)
+    for i in range(len(scores)):
+        if scores[i] > 0.5:  # Umbral de confianza para la detección
+            ymin, xmin, ymax, xmax = boxes[i]
+
+            h, w, _ = img_array.shape
+            left, right, top, bottom = (
+                int(xmin * w),
+                int(xmax * w),
+                int(ymin * h),
+                int(ymax * h),
+            )
+
+            # Aseguramos que las coordenadas estén dentro de los límites de la imagen
+            left, top = max(0, left), max(0, top)
+            right, bottom = min(w, right), min(h, bottom)
+
+            # Verificar si las dimensiones de recorte son válidas para evitar errores con cv2
+            if bottom <= top or right <= left:
+                continue  # Saltar esta detección si las dimensiones son inválidas
+
+            face = img_array[top:bottom, left:right]
+
+            if (
+                face.shape[0] > 0 and face.shape[1] > 0
+            ):  # Asegurar que la cara no esté vacía
+                faces.append(face)
+
     return faces
 
 
@@ -63,53 +115,73 @@ class FaceAlreadyRegisteredError(ValidationError):
 
 
 # ------------------------------------------------------------------
-# 3. API pública (misma firma que antes)
+# 3. API pública
 # ------------------------------------------------------------------
 class FacialRecognitionService:
+    DEFAULT_THRESHOLD = 0.20
+
     @staticmethod
-    def create_facial_profile(User, image: InMemoryUploadedFile):
+    def create_facial_profile(user_instance, image: InMemoryUploadedFile):
         """Guarda el embedding de la cara principal detectada."""
         img_bytes = image.read()
         image_np = _bytes_to_array(img_bytes)
+
         faces = _face_detect_and_align(image_np)
+
         if not faces:
             return None
-        embedding = facenet(_preprocess(faces[0]))[0].numpy()
-        profile, _ = FacialRecognitionProfile.objects.update_or_create(
-            user=User, 
+
+        processed_face_for_embedding = _preprocess_for_embedding(faces[0])
+
+        embedding = embedding_model(processed_face_for_embedding)[0].numpy()
+
+        profile, created = FacialRecognitionProfile.objects.update_or_create(
+            user=user_instance,
             defaults={
                 "face_encoding": embedding.tobytes(),
                 "face_image": image,
-            }
+            },
         )
         return profile
 
     @staticmethod
     def process_uploaded_image(image: InMemoryUploadedFile) -> np.ndarray | None:
-        """Útil para EndUserRegistrationSerializer."""
         return _bytes_to_array(image.read())
 
     @staticmethod
-    def compare_faces(stored_bytes: bytes, new_bytes: bytes, threshold=0.45):
-        """
-        Compara dos embeddings usando cosine similarity.
-        Devuelve (match: bool, distance: float)
-        """
+    def compare_faces(stored_bytes: bytes, new_bytes: bytes, threshold=None):
+        threshold = threshold or FacialRecognitionService.DEFAULT_THRESHOLD
+
         emb1 = np.frombuffer(stored_bytes, dtype=np.float32)
         emb2 = np.frombuffer(new_bytes, dtype=np.float32)
+
+        # La normalización ya se hace, lo cual es correcto para cosine_similarity
+        # Asegúrate de que los embeddings sean unitarios para que la similitud coseno
+        # represente la distancia angular.
+        if np.linalg.norm(emb1) > 0:  # Evitar división por cero
+            emb1 = emb1 / np.linalg.norm(emb1)
+        if np.linalg.norm(emb2) > 0:  # Evitar división por cero
+            emb2 = emb2 / np.linalg.norm(emb2)
+
         dist = 1 - cosine_similarity([emb1], [emb2])[0][0]
+
         return dist < threshold, dist
 
     @staticmethod
     def login_with_face(image: InMemoryUploadedFile):
         """Devuelve el usuario si la cara coincide con algún perfil."""
         img_bytes = image.read()
-        faces = _face_detect_and_align(_bytes_to_array(img_bytes))
+        image_np = _bytes_to_array(img_bytes)
+
+        faces = _face_detect_and_align(image_np)
+
         if not faces:
             return None
-        emb = facenet(_preprocess(faces[0]))[0].numpy()
 
-        # Búsqueda lineal (para < 1k usuarios es instantáneo)
+        processed_face_for_embedding = _preprocess_for_embedding(faces[0])
+
+        emb = embedding_model(processed_face_for_embedding)[0].numpy()
+
         for profile in FacialRecognitionProfile.objects.select_related("user").all():
             match, _ = FacialRecognitionService.compare_faces(
                 profile.face_encoding, emb.tobytes()

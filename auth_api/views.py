@@ -9,6 +9,10 @@ from django.core.exceptions import ValidationError
 from facial_auth_app.services import (
     FacialRecognitionService,
     FaceAlreadyRegisteredError,
+    _bytes_to_array,
+    _face_detect_and_align,
+    _preprocess_for_embedding,
+    embedding_model,
 )
 from facial_auth_app.models import FacialRecognitionProfile
 from auth_api.models import ClientApp, EndUser
@@ -69,10 +73,12 @@ class RegisterView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        except Exception:
+        except Exception as e:
+            import traceback
+            traceback.print_exc()  # 👈 Agrega esto
             return Response(
                 {
-                    "errors": {"non_field_errors": "Ocurrió un error inesperado"},
+                    "errors": {"non_field_errors": str(e)},
                     "message": "Error en el servidor",
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -109,7 +115,6 @@ class FaceLoginView(APIView):
         serializer.is_valid(raise_exception=True)
         image_file = serializer.validated_data["face_image"]
 
-        # --- nuevo flujo sin face_recognition ---
         user = FacialRecognitionService.login_with_face(image_file)
 
         if user:
@@ -119,7 +124,8 @@ class FaceLoginView(APIView):
                     "user": UserSerializer(user).data,
                     "tokens": tokens,
                     "message": "Ingreso facial exitoso",
-                }
+                },
+                status=status.HTTP_200_OK,
             )
 
         return Response(
@@ -191,8 +197,19 @@ class EndUserRegisterView(APIView):
             )
         except FaceAlreadyRegisteredError as e:
             return Response({"detail": str(e)}, status=status.HTTP_409_CONFLICT)
-        except ValidationError as e:
+        except (
+            drf_serializers.ValidationError
+        ) as e:
+            return Response(
+                e.detail, status=status.HTTP_400_BAD_REQUEST
+            )  
+        except ValidationError as e: 
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            return Response(
+                {"detail": "Ocurrió un error inesperado al registrar el usuario."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
 
 class EndUserFaceLoginView(APIView):
@@ -212,33 +229,51 @@ class EndUserFaceLoginView(APIView):
                 {"detail": "Imagen requerida"}, status=status.HTTP_400_BAD_REQUEST
             )
 
-        image_np = FacialRecognitionService.process_uploaded_image(image)
-        faces = FacialRecognitionService._face_detect_and_align(image_np)
+        image_np = _bytes_to_array(image.read())
+
+        faces = _face_detect_and_align(image_np)
         if not faces:
             return Response(
-                {"detail": "No se detectó rostro"}, status=status.HTTP_400_BAD_REQUEST
+                {"detail": "No se detectó ningún rostro en la imagen."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        emb = FacialRecognitionService._embedding(faces[0])
+        processed_face = _preprocess_for_embedding(faces[0])
+        emb = embedding_model(processed_face)[0].numpy()
         unknown = emb.tobytes()
 
         best_user = None
         best_dist = 1.0
+
+        # Iterar sobre los usuarios de la aplicación para encontrar una coincidencia
+        # El threshold aquí debe coincidir con el DEFAULT_THRESHOLD del servicio,
+        # o puedes usar app.strictness si lo deseas.
+        # Por ahora, mantendremos el 0.6 que tenías.
+        # Se asume que `app.strictness` está entre 0 y 1 para usarse con `compare_faces`
+        # si lo deseas: threshold_for_app = 1 - app.strictness (si strictness es confianza)
+        # o simplemente app.strictness (si strictness es distancia).
+
         for user in app.end_users.filter(deleted=False):
             match, dist = FacialRecognitionService.compare_faces(
                 user.face_encoding, unknown
             )
-            if match and dist < best_dist:
+            if match and dist < best_dist: 
                 best_user, best_dist = user, dist
 
-        if best_user and best_dist < 0.6:
+
+        if (
+            best_user
+        ):  
             return Response(
                 {
                     "email": best_user.email,
                     "full_name": best_user.full_name,
                     "message": "Inicio de Sesión exitoso",
-                    "confidence": round(1 - best_dist, 3),
-                }
+                    "confidence": round(
+                        1 - best_dist, 3
+                    ), 
+                },
+                status=status.HTTP_200_OK,
             )
 
         return Response(

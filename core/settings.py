@@ -28,7 +28,26 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.environ.get("SECRET_KEY", default="your secret key")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = "RAILWAY" not in os.environ
+# DEBUG = "RAILWAY" not in os.environ
+DEBUG = True
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "console": {
+            "level": "DEBUG", 
+            "class": "logging.StreamHandler",
+        },
+    },
+    "loggers": {
+        "django.request": {
+            "handlers": ["console"],
+            "level": "DEBUG",
+            "propagate": True,
+        },
+    },
+}
 
 ALLOWED_HOSTS = ["localhost", "127.0.0.1",]
 
@@ -88,22 +107,26 @@ WSGI_APPLICATION = "core.wsgi.application"
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
 DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.getenv("PGDATABASE"),
-        "USER": os.getenv("PGUSER"),
-        "PASSWORD": os.getenv("PGPASSWORD"),
-        "HOST": os.getenv("PGHOST", "localhost"),
-        "PORT": os.getenv("PGPORT", "5432"),
-    }
+    "default": dj_database_url.config(default=os.environ.get("DATABASE_URL"))
 }
 
-if "DATABASE_URL" in os.environ:
-    DATABASES["default"] = dj_database_url.config(
-        default=os.environ["DATABASE_URL"],
-        conn_max_age=600,
-        ssl_require=True
-    )
+# DATABASES = {
+#     "default": {
+#         "ENGINE": "django.db.backends.postgresql",
+#         "NAME": os.getenv("PGDATABASE"),
+#         "USER": os.getenv("PGUSER"),
+#         "PASSWORD": os.getenv("PGPASSWORD"),
+#         "HOST": os.getenv("PGHOST", "localhost"),
+#         "PORT": os.getenv("PGPORT", "5432"),
+#     }
+# }
+
+# if "DATABASE_URL" in os.environ:
+#     DATABASES["default"] = dj_database_url.config(
+#         default=os.environ["DATABASE_URL"],
+#         conn_max_age=600,
+#         ssl_require=True
+#     )
 
 AUTH_USER_MODEL = "auth_api.CustomUser"
 
@@ -163,11 +186,19 @@ REST_FRAMEWORK = {
 
 # CORS Settings
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
+    "https://facial-auth-api-production.up.railway.app", 
     "https://facial-auth-website.vercel.app",
+    "http://localhost:5173",
+    "http://127.0.0.1:3000",
 ]
 
 CORS_ALLOW_CREDENTIALS = True
+
+CSRF_TRUSTED_ORIGINS = [
+    "https://facial-auth-api-production.up.railway.app",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
 
 # Configuración de sesión
 SESSION_COOKIE_SAMESITE = "None"
