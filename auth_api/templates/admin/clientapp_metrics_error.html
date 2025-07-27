@@ -1,0 +1,10 @@
+{% extends 'admin/base_site.html' %}
+{% load i18n admin_urls static %}
+
+{% block content %}
+<div id="content-main">
+    <h1>Error al cargar Métricas</h1>
+    <p class="errornote">{{ message }}</p>
+    <p><a href="{% url 'admin:auth_api_clientapp_changelist' %}">Volver a la lista de aplicaciones</a></p>
+</div>
+{% endblock %}

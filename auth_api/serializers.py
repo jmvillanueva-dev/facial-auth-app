@@ -3,6 +3,7 @@ from rest_framework.validators import UniqueValidator
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
+from django.db import transaction
 from facial_auth_app.services import (
     FacialRecognitionService,
     FaceAlreadyRegisteredError,
@@ -43,6 +44,8 @@ class RegistrationSerializer(serializers.ModelSerializer):
 
     password_conf = serializers.CharField(write_only=True)
     face_image = serializers.ImageField(write_only=True)
+    # Nuevo campo para forzar el registro
+    force_register = serializers.BooleanField(default=False, write_only=True)
 
     class Meta:
         model = User
@@ -52,6 +55,7 @@ class RegistrationSerializer(serializers.ModelSerializer):
             "password",
             "password_conf",
             "face_image",
+            "force_register",
         ]
         extra_kwargs = {"password": {"write_only": True}}
 
@@ -78,7 +82,6 @@ class RegistrationSerializer(serializers.ModelSerializer):
                     password_errors.append(error)
             raise serializers.ValidationError({"password": password_errors})
 
-        # Adición: Validación de la imagen facial aquí mismo
         face_image = data.get("face_image")
         if face_image:
             img_np = _bytes_to_array(face_image.read())
@@ -89,7 +92,6 @@ class RegistrationSerializer(serializers.ModelSerializer):
                         "face_image": "No se detectó ningún rostro en la imagen proporcionada."
                     }
                 )
-            # Restablece el puntero del archivo para que la imagen se pueda leer nuevamente en `create`
             face_image.seek(0)
         else:
             raise serializers.ValidationError(
@@ -99,8 +101,6 @@ class RegistrationSerializer(serializers.ModelSerializer):
         return data
 
     def create(self, validated_data):
-        from django.db import transaction
-
         print("DEBUG: Iniciando creación del usuario")
 
         base_username = validated_data["email"].split("@")[0]
@@ -114,34 +114,57 @@ class RegistrationSerializer(serializers.ModelSerializer):
         face_image = validated_data.pop("face_image")
         validated_data.pop("password_conf")
         password = validated_data.pop("password")
+        force_register = validated_data.pop(
+            "force_register", False
+        )
 
         with transaction.atomic():
             user = User.objects.create(**validated_data)
             user.set_password(password)
             user.save()
 
-            # Llama a create_facial_profile para manejar la detección y embedding
-            profile = FacialRecognitionService.create_facial_profile(user, face_image)
-            if not profile:
+            # Procesar la imagen para obtener el embedding
+            img_np = _bytes_to_array(face_image.read())
+            faces = _face_detect_and_align(img_np)
+            if not faces:
+                user.delete()  # Si no hay rostro, eliminar el usuario recién creado
                 raise serializers.ValidationError(
                     {
                         "face_image": "No se pudo procesar la imagen facial para el perfil."
                     }
                 )
+            processed_face_for_embedding = _preprocess_for_embedding(faces[0])
+            embedding = embedding_model(processed_face_for_embedding)[0].numpy()
+            encoding_bytes = embedding.tobytes()
 
-            new_encoding = profile.face_encoding
-            for existing_profile in FacialRecognitionProfile.objects.filter(
-                is_active=True
-            ).exclude(user=user):
-                match, _ = FacialRecognitionService.compare_faces(
-                    existing_profile.face_encoding, new_encoding
-                )
-                if match:
-                    # Rollback: borramos el usuario y levantamos la excepción
-                    user.delete()
-                    raise FaceAlreadyRegisteredError(
-                        "Este rostro ya está registrado por otro usuario."
+            # Lógica de verificación de duplicados basada en force_register
+            if not force_register:
+                for existing_profile in FacialRecognitionProfile.objects.filter(
+                    is_active=True
+                ).exclude(
+                    user=user
+                ):  # Excluir el usuario recién creado
+                    match, _ = FacialRecognitionService.compare_faces(
+                        existing_profile.face_encoding, encoding_bytes
                     )
+                    if match:
+                        user.delete()  # Eliminar el usuario recién creado si hay duplicado
+                        raise FaceAlreadyRegisteredError(
+                            "Este rostro ya está registrado por otro usuario. Si estás seguro de que eres tú, marca 'Forzar Registro'."
+                        )
+
+            FacialRecognitionProfile.objects.update_or_create(
+                user=user,
+                defaults={
+                    "face_encoding": encoding_bytes,
+                    "face_image": face_image,
+                    "description": (
+                        "Initial registration"
+                        if not force_register
+                        else "Forced registration/re-registration"
+                    ),
+                },
+            )
 
             user.face_auth_enabled = True
             user.save(update_fields=["face_auth_enabled"])
@@ -153,37 +176,77 @@ class FaceLoginSerializer(serializers.Serializer):
     face_image = serializers.ImageField()
 
 
+class FaceLoginFeedbackSerializer(serializers.Serializer):
+    """
+    Serializador para validar los datos del feedback de autenticación facial.
+    """
+    user_id = serializers.IntegerField()
+    password = serializers.CharField(write_only=True)
+    face_image = serializers.ImageField(write_only=True)
+
+
 class ClientAppSerializer(serializers.ModelSerializer):
     class Meta:
         model = ClientApp
-        fields = ["id", "name", "description", "token", "strictness", "created_at"]
+        fields = [
+            "id",
+            "name",
+            "description",
+            "token",
+            "CONFIDENCE_THRESHOLD",
+            "FALLBACK_THRESHOLD",
+            "created_at",
+        ]
         read_only_fields = ["token", "created_at"]
+
+    def validate(self, data):
+        confidence = data.get("CONFIDENCE_THRESHOLD")
+        fallback = data.get("FALLBACK_THRESHOLD")
+
+        if confidence is not None and not (0.0 <= confidence <= 1.0):
+            raise serializers.ValidationError(
+                {"CONFIDENCE_THRESHOLD": "El valor debe estar entre 0.0 y 1.0."}
+            )
+
+        if fallback is not None and not (0.0 <= fallback <= 1.0):
+            raise serializers.ValidationError(
+                {"FALLBACK_THRESHOLD": "El valor debe estar entre 0.0 y 1.0."}
+            )
+
+        return data
 
 
 class EndUserRegistrationSerializer(serializers.ModelSerializer):
     face_image = serializers.ImageField(write_only=True)
+    force_register = serializers.BooleanField(default=False, write_only=True)
 
     class Meta:
         model = EndUser
-        fields = ["email", "full_name", "role", "password", "face_image"]
+        fields = [
+            "email",
+            "full_name",
+            "role",
+            "password",
+            "face_image",
+            "force_register",
+        ]
 
     def create(self, validated_data):
         face_image = validated_data.pop("face_image")
         app = self.context.get("app")
         email = validated_data.get("email")
+        force_register = validated_data.pop(
+            "force_register", False
+        )  # Obtener y remover force_register
 
-        # --- Flujo actualizado para obtener embeddings ---
-        # 1. Convertir bytes a array de numpy
         image_np = _bytes_to_array(face_image.read())
 
-        # 2. Detectar caras
         faces = _face_detect_and_align(image_np)
         if not faces:
             raise serializers.ValidationError(
                 "No se detectó ningún rostro en la imagen."
             )
 
-        # 3. Preprocesar la cara para el modelo de embedding y generar el embedding
         processed_face = _preprocess_for_embedding(faces[0])
         embedding = embedding_model(processed_face)[0].numpy()
         encoding_bytes = embedding.tobytes()
@@ -191,28 +254,82 @@ class EndUserRegistrationSerializer(serializers.ModelSerializer):
         existing = EndUser.objects.filter(app=app, email=email).first()
         if existing:
             if existing.deleted:
+                # Si el usuario existía pero estaba "eliminado", lo reactivamos
                 existing.deleted = False
                 existing.full_name = validated_data.get("full_name")
                 existing.role = validated_data.get("role")
-                existing.face_encoding = (
-                    encoding_bytes  # Actualizar el encoding si el usuario es reactivado
-                )
-                existing.password = validated_data.get("password")
+                existing.face_encoding = encoding_bytes  # Actualizar encoding
+                existing.password = validated_data.get(
+                    "password"
+                )  # O set_password si es hashed
                 existing.save()
                 return existing
             else:
-                raise serializers.ValidationError("El email ya está registrado.")
+                # Si el usuario existe y no está eliminado, y no se fuerza el registro, es un error
+                if not force_register:
+                    raise serializers.ValidationError(
+                        "El email ya está registrado para esta aplicación. Si deseas actualizar tu rostro, marca 'Forzar Registro'."
+                    )
+                else:
+                    # Si se fuerza el registro, actualizamos el perfil existente
+                    existing.full_name = validated_data.get("full_name")
+                    existing.role = validated_data.get("role")
+                    existing.face_encoding = encoding_bytes  # Actualizar encoding
+                    existing.password = validated_data.get(
+                        "password"
+                    )
+                    existing.save()
+                    return existing
 
-        # Verificar duplicidad facial solo entre usuarios no eliminados
-        for end_user in app.end_users.filter(deleted=False):
-            match, _ = FacialRecognitionService.compare_faces(
-                end_user.face_encoding, encoding_bytes
-            )
-            if match:
-                raise FaceAlreadyRegisteredError(
-                    "Este rostro ya está registrado para esta aplicación."
+        # Verificar duplicidad facial solo si no se fuerza el registro y el usuario es nuevo
+        if not force_register:
+            for end_user_in_app in app.end_users.filter(deleted=False):
+                match, _ = FacialRecognitionService.compare_faces(
+                    end_user_in_app.face_encoding,
+                    encoding_bytes,
+                    threshold=app.CONFIDENCE_THRESHOLD,
                 )
+                if match:
+                    raise FaceAlreadyRegisteredError(
+                        "Este rostro ya está registrado para esta aplicación. Si estás seguro de que no eres tú, marca 'Forzar Registro'."
+                    )
 
+        # Crear nuevo EndUser si no existe o si se forzó el registro y no había duplicado de email
         validated_data["face_encoding"] = encoding_bytes
         validated_data["app"] = app
         return EndUser.objects.create(**validated_data)
+
+
+class EndUserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EndUser
+        fields = ["id", "email", "full_name", "role", "created_at"]
+        read_only_fields = ["id", "email", "full_name", "role", "created_at"]
+
+
+class EndUserFaceFeedbackSerializer(serializers.Serializer):
+    """
+    Serializador para validar los datos del feedback de autenticación facial
+    para los usuarios finales (EndUser) de una ClientApp.
+    """
+    user_id = serializers.IntegerField()
+    password = serializers.CharField(write_only=True, required=False, allow_blank=True) 
+    face_image = serializers.ImageField(write_only=True)
+
+    def validate(self, data):
+        face_image = data.get("face_image")
+        if face_image:
+            img_np = _bytes_to_array(face_image.read())
+            faces = _face_detect_and_align(img_np)
+            if not faces:
+                raise serializers.ValidationError(
+                    {"face_image": "No se detectó ningún rostro en la imagen proporcionada."}
+                )
+            face_image.seek(0) # Restablecer el puntero del archivo
+        else:
+            raise serializers.ValidationError(
+                {"face_image": "Se requiere una imagen facial para el feedback."}
+            )
+        return data
+
+        return data

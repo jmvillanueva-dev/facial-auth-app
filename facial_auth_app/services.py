@@ -5,7 +5,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from django.core.files.uploadedfile import InMemoryUploadedFile
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
-from .models import FacialRecognitionProfile
+from .models import FacialRecognitionProfile, FaceFeedback
 
 print("DEBUG: Starting import of services.py")
 
@@ -37,6 +37,8 @@ except Exception as e:
     print(f"ERROR: Failed to load embedding_model. Exception: {e}")
 
 EMBEDDING_DIM = 1536
+
+
 # ------------------------------------------------------------------
 # 2. Utils
 # ------------------------------------------------------------------
@@ -63,10 +65,7 @@ def _preprocess_for_embedding(img_array: np.ndarray) -> tf.Tensor:
     Espera una imagen redimensionada a 299x299 y valores en [-1, 1].
     """
     img = cv2.resize(img_array, (299, 299))
-    # CORRECCIÓN: Normalizar de [0, 255] a [-1, 1] para InceptionResNetV2
-    img = (
-        img.astype(np.float32) / 127.5 - 1.0
-    )  # <-- ¡Línea corregida para rango [-1, 1]!
+    img = (img.astype(np.float32) / 127.5 - 1.0)
     img = tf.expand_dims(img, axis=0)
     return img
 
@@ -77,13 +76,9 @@ def _face_detect_and_align(img_array: np.ndarray):
     Devuelve los rostros recortados.
     """
     preprocessed_img = _preprocess_for_detection(img_array)
-
     detections = face_detector(preprocessed_img)
 
-    # Es crucial que estas claves existan en la salida del modelo
     if "detection_boxes" not in detections or "detection_scores" not in detections:
-        # Podrías loggear esto para depuración
-        # print("Advertencia: Claves 'detection_boxes' o 'detection_scores' no encontradas en la salida del detector.")
         return []
 
     boxes = detections["detection_boxes"][0].numpy()
@@ -91,7 +86,7 @@ def _face_detect_and_align(img_array: np.ndarray):
 
     faces = []
     for i in range(len(scores)):
-        if scores[i] > 0.5:  # Umbral de confianza para la detección
+        if scores[i] > 0.5:
             ymin, xmin, ymax, xmax = boxes[i]
 
             h, w, _ = img_array.shape
@@ -108,13 +103,10 @@ def _face_detect_and_align(img_array: np.ndarray):
 
             # Verificar si las dimensiones de recorte son válidas para evitar errores con cv2
             if bottom <= top or right <= left:
-                continue  # Saltar esta detección si las dimensiones son inválidas
+                continue
 
             face = img_array[top:bottom, left:right]
-
-            if (
-                face.shape[0] > 0 and face.shape[1] > 0
-            ):  # Asegurar que la cara no esté vacía
+            if (face.shape[0] > 0 and face.shape[1] > 0):
                 faces.append(face)
 
     return faces
@@ -128,31 +120,61 @@ class FaceAlreadyRegisteredError(ValidationError):
 # 3. API pública
 # ------------------------------------------------------------------
 class FacialRecognitionService:
-    DEFAULT_THRESHOLD = 0.18
+    # Umbral de distancia para detectar una coincidencia.
+    # Por ejemplo, 0.18 significa que 1 - 0.18 = 0.82 de similitud (82%)
+    CONFIDENCE_THRESHOLD = 0.82
+    # Umbral de distancia para una posible coincidencia (más permisivo)
+    FALLBACK_THRESHOLD = 0.75
 
     @staticmethod
     def create_facial_profile(user_instance, image: InMemoryUploadedFile):
-        """Guarda el embedding de la cara principal detectada."""
+        """Crea el primer embedding de cara para un nuevo usuario."""
         img_bytes = image.read()
         image_np = _bytes_to_array(img_bytes)
 
         faces = _face_detect_and_align(image_np)
-
         if not faces:
             return None
 
         processed_face_for_embedding = _preprocess_for_embedding(faces[0])
-
         embedding = embedding_model(processed_face_for_embedding)[0].numpy()
-
-        profile, created = FacialRecognitionProfile.objects.update_or_create(
+        profile = FacialRecognitionProfile.objects.create(
             user=user_instance,
-            defaults={
-                "face_encoding": embedding.tobytes(),
-                "face_image": image,
-            },
+            face_encoding=embedding.tobytes(),
+            face_image=image,
+            description="Initial registration",  # <--- Usamos el nuevo campo
         )
         return profile
+
+    @staticmethod
+    def process_and_store_feedback(user_instance, image: InMemoryUploadedFile):
+        """
+        Procesa y guarda la imagen de feedback como un nuevo perfil
+        para mejorar inmediatamente el sistema.
+        """
+        img_bytes = image.read()
+        image_np = _bytes_to_array(img_bytes)
+
+        faces = _face_detect_and_align(image_np)
+        if not faces:
+            return False
+
+        processed_face_for_embedding = _preprocess_for_embedding(faces[0])
+        new_embedding = embedding_model(processed_face_for_embedding)[0].numpy()
+
+        # Guarda la imagen de feedback
+        FaceFeedback.objects.create(user=user_instance, submitted_image=image)
+
+        # Crea un nuevo perfil facial para el usuario con el embedding de la imagen de feedback.
+        # Esto mejora inmediatamente la precisión para este usuario.
+        FacialRecognitionProfile.objects.create(
+            user=user_instance,
+            face_encoding=new_embedding.tobytes(),
+            face_image=image,
+            description="Feedback from ambiguous match",
+        )
+
+        return True
 
     @staticmethod
     def process_uploaded_image(image: InMemoryUploadedFile) -> np.ndarray | None:
@@ -160,44 +182,74 @@ class FacialRecognitionService:
 
     @staticmethod
     def compare_faces(stored_bytes: bytes, new_bytes: bytes, threshold=None):
-        threshold = threshold or FacialRecognitionService.DEFAULT_THRESHOLD
+        threshold = threshold or FacialRecognitionService.CONFIDENCE_THRESHOLD
 
         emb1 = np.frombuffer(stored_bytes, dtype=np.float32)
         emb2 = np.frombuffer(new_bytes, dtype=np.float32)
 
-        # La normalización ya se hace, lo cual es correcto para cosine_similarity
-        # Asegúrate de que los embeddings sean unitarios para que la similitud coseno
-        # represente la distancia angular.
-        if np.linalg.norm(emb1) > 0:  # Evitar división por cero
+        if np.linalg.norm(emb1) > 0:
             emb1 = emb1 / np.linalg.norm(emb1)
-        if np.linalg.norm(emb2) > 0:  # Evitar división por cero
+        if np.linalg.norm(emb2) > 0: 
             emb2 = emb2 / np.linalg.norm(emb2)
 
         dist = 1 - cosine_similarity([emb1], [emb2])[0][0]
-
         return dist < threshold, dist
 
     @staticmethod
     def login_with_face(image: InMemoryUploadedFile):
-        """Devuelve el usuario si la cara coincide con algún perfil."""
+        """
+        Devuelve un diccionario con el estado del login.
+        - 'success': si encuentra una coincidencia con alta confianza.
+        - 'ambiguous_match': si encuentra una o más coincidencias posibles que requieren confirmación.
+        - 'no_match': si no encuentra ninguna coincidencia.
+        """
         img_bytes = image.read()
         image_np = _bytes_to_array(img_bytes)
-
         faces = _face_detect_and_align(image_np)
 
         if not faces:
-            return None
+            return {"status": "no_match"}
 
         processed_face_for_embedding = _preprocess_for_embedding(faces[0])
-
         emb = embedding_model(processed_face_for_embedding)[0].numpy()
 
-        for profile in FacialRecognitionProfile.objects.select_related("user").all():
-            match, _ = FacialRecognitionService.compare_faces(
-                profile.face_encoding, emb.tobytes()
+        all_profiles = FacialRecognitionProfile.objects.select_related("user").filter(
+            user__face_auth_enabled=True
+        )
+
+        matches_by_user = {}
+        for profile in all_profiles:
+            # Comparamos el embedding de la imagen con CADA uno de los perfiles guardados
+            match, dist = FacialRecognitionService.compare_faces(
+                profile.face_encoding,
+                emb.tobytes(),
+                threshold=FacialRecognitionService.FALLBACK_THRESHOLD,
             )
-            if match and profile.user.face_auth_enabled:
-                return profile.user
-        return None
+            if match:
+                user_id = profile.user.id
+                if (
+                    user_id not in matches_by_user
+                    or dist < matches_by_user[user_id]["distance"]
+                ):
+                    matches_by_user[user_id] = {"user": profile.user, "distance": dist}
+
+        if not matches_by_user:
+            return {"status": "no_match"}
+
+        matches = sorted(matches_by_user.values(), key=lambda x: x["distance"])
+        best_match = matches[0]
+
+        if best_match["distance"] <= FacialRecognitionService.CONFIDENCE_THRESHOLD:
+            return {"status": "success", "user": best_match["user"]}
+
+        ambiguous_matches = [
+            {
+                "id": m["user"].id,
+                "full_name": m["user"].full_name,
+                "distance": m["distance"],
+            }
+            for m in matches
+        ]
+        return {"status": "ambiguous_match", "matches": ambiguous_matches}
 
 print("DEBUG: services.py module loaded completely.")
