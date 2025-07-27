@@ -19,7 +19,7 @@ class FacialRecognitionProfile(models.Model):
         User, on_delete=models.CASCADE, related_name="facial_profiles"
     )
     face_encoding = models.BinaryField()
-    face_image = models.ImageField( 
+    face_image = models.ImageField(
         upload_to=user_face_image_path, null=True, blank=True
     )
     is_active = models.BooleanField(default=True)

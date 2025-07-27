@@ -13,7 +13,7 @@ from facial_auth_app.services import (
     embedding_model,
 )
 from facial_auth_app.models import FacialRecognitionProfile
-from auth_api.models import ClientApp, EndUser
+from auth_api.models import ClientApp, EndUser, CustomUserLoginAttempt
 
 User = get_user_model()
 
@@ -180,9 +180,49 @@ class FaceLoginFeedbackSerializer(serializers.Serializer):
     """
     Serializador para validar los datos del feedback de autenticación facial.
     """
-    user_id = serializers.IntegerField()
-    password = serializers.CharField(write_only=True)
-    face_image = serializers.ImageField(write_only=True)
+    user_id = serializers.IntegerField(required=False)
+    password = serializers.CharField(required=False)
+    face_image = serializers.ImageField(
+        required=False
+    )  # Puede ser opcional si solo se envía feedback negativo sin nueva imagen
+    login_attempt_id = serializers.IntegerField(required=True)
+    feedback_decision = serializers.CharField(
+        required=True
+    )  # 'correcto' o 'incorrecto'
+
+    def validate(self, data):
+        feedback_decision = data.get("feedback_decision")
+        user_id = data.get("user_id")
+        password = data.get("password")
+        face_image = data.get("face_image")
+
+        if feedback_decision == "correcto":
+            if not user_id:
+                raise serializers.ValidationError(
+                    {"user_id": "user_id es requerido para feedback 'correcto'."}
+                )
+            if not password:
+                raise serializers.ValidationError(
+                    {"password": "Contraseña es requerida para feedback 'correcto'."}
+                )
+            if not face_image:
+                raise serializers.ValidationError(
+                    {
+                        "face_image": "Imagen de rostro es requerida para feedback 'correcto'."
+                    }
+                )
+        elif feedback_decision == "incorrecto":
+            # Para 'incorrecto', user_id y password no son necesarios,
+            # pero login_attempt_id y face_image (opcionalmente) sí.
+            pass
+        else:
+            raise serializers.ValidationError(
+                {
+                    "feedback_decision": "feedback_decision debe ser 'correcto' o 'incorrecto'."
+                }
+            )
+
+        return data
 
 
 class ClientAppSerializer(serializers.ModelSerializer):

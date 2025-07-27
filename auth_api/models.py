@@ -169,3 +169,76 @@ class EndUserLoginAttempt(models.Model):
         status_display = self.get_initial_status_display()
         user_info = self.best_match_user.full_name if self.best_match_user else "N/A"
         return f"Intento de {status_display} en {self.app.name} por {user_info} ({self.timestamp.strftime('%Y-%m-%d %H:%M')})"
+
+
+class CustomUserLoginAttempt(models.Model):
+    """
+    Registra cada intento de inicio de sesión facial de un CustomUser.
+    Utilizado para recolectar métricas de rendimiento del modelo para el sistema principal.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="login_attempts",
+        null=True,
+        blank=True,
+    )
+    timestamp = models.DateTimeField(auto_now_add=True)
+    submitted_image = models.ImageField(
+        upload_to="customuser_login_attempts_images/", null=True, blank=True
+    )
+
+    # El usuario que el sistema identificó como la mejor coincidencia (puede ser nulo)
+    best_match_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="login_attempts_as_best_match_customuser",
+    )
+    best_match_distance = models.FloatField(null=True, blank=True)
+
+    # Estado inicial del intento de login según el modelo
+    STATUS_CHOICES = [
+        ("success", "Éxito (alta confianza)"),
+        ("ambiguous_match", "Coincidencia ambigua"),
+        ("no_match", "Sin coincidencia"),
+        ("error", "Error de procesamiento"),
+    ]
+    initial_status = models.CharField(max_length=20, choices=STATUS_CHOICES)
+
+    # El usuario que finalmente confirmó su identidad a través del feedback (si aplica)
+    confirmed_by_feedback = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="login_attempts_confirmed_customuser",
+    )
+
+    # Campo para almacenar el feedback del usuario
+    FEEDBACK_CHOICES = [
+        ("correcto", "Correcto"),
+        ("incorrecto", "Incorrecto"),
+    ]
+    user_feedback = models.CharField(
+        max_length=10,
+        choices=FEEDBACK_CHOICES,
+        null=True,
+        blank=True,
+        help_text="Feedback directo del usuario sobre el intento de login.",
+    )
+
+    # Indica si el intento de login fue verificado y confirmado como correcto por el usuario
+    is_verified_and_correct = models.BooleanField(default=False)
+
+    class Meta:
+        verbose_name = "Intento de Login de Usuario del Sistema"
+        verbose_name_plural = "Intentos de Login de Usuarios del Sistema"
+        ordering = ["-timestamp"]
+
+    def __str__(self):
+        status_display = self.get_initial_status_display()
+        user_info = self.best_match_user.full_name if self.best_match_user else "N/A"
+        return f"Intento de {status_display} por {user_info} ({self.timestamp.strftime('%Y-%m-%d %H:%M')})"

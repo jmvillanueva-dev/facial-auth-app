@@ -122,9 +122,9 @@ class FaceAlreadyRegisteredError(ValidationError):
 class FacialRecognitionService:
     # Umbral de distancia para detectar una coincidencia.
     # Por ejemplo, 0.18 significa que 1 - 0.18 = 0.82 de similitud (82%)
-    CONFIDENCE_THRESHOLD = 0.82
+    CONFIDENCE_THRESHOLD = 0.18
     # Umbral de distancia para una posible coincidencia (más permisivo)
-    FALLBACK_THRESHOLD = 0.75
+    FALLBACK_THRESHOLD = 0.20
 
     @staticmethod
     def create_facial_profile(user_instance, image: InMemoryUploadedFile):

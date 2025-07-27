@@ -1,0 +1,138 @@
+{% extends 'admin/base_site.html' %}
+{% load i18n admin_urls static %}
+
+{% block extrastyle %}{{ block.super }}
+<style>
+    .metric-card {
+        background-color: #fff;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        padding: 20px;
+        margin-bottom: 20px;
+        border: 1px solid #e0e0e0;
+    }
+    .metric-card h3 {
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: #333;
+        margin-bottom: 15px;
+        border-bottom: 1px solid #eee;
+        padding-bottom: 10px;
+    }
+    .metric-item {
+        display: flex;
+        justify-content: space-between;
+        padding: 8px 0;
+        border-bottom: 1px dashed #f0f0f0;
+    }
+    .metric-item:last-child {
+        border-bottom: none;
+    }
+    .metric-label {
+        font-weight: 500;
+        color: #555;
+    }
+    .metric-value {
+        font-weight: 700;
+        color: #000;
+    }
+    .metric-value.success { color: #28a745; }
+    .metric-value.warning { color: #ffc107; }
+    .metric-value.danger { color: #dc3545; }
+    .metric-value.info { color: #17a2b8; }
+
+    .period-section {
+        margin-bottom: 40px;
+        padding: 20px;
+        border: 1px solid #d0d0d0;
+        border-radius: 8px;
+        background-color: #f9f9f9;
+    }
+    .period-section h2 {
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: #1a73e8; /* Google Blue */
+        margin-bottom: 20px;
+        text-align: center;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+    <h1>Métricas de Rendimiento de Login Facial para "{{ user.full_name|default:user.username }}"</h1> {# CAMBIO CLAVE AQUÍ #}
+    <p class="help">Aquí puedes ver las métricas de rendimiento del reconocimiento facial para este usuario del sistema.</p>
+
+    {% if not metrics_data %}
+        <p>No hay datos de intentos de login facial disponibles para este usuario.</p>
+    {% else %}
+        {% for period_name, metrics in metrics_data.items %}
+            <div class="period-section">
+                <h2>{% if period_name == 'last_24_hours' %}Últimas 24 Horas
+                    {% elif period_name == 'last_7_days' %}Últimos 7 Días
+                    {% elif period_name == 'last_30_days' %}Últimos 30 Días
+                    {% else %}Todo el Tiempo
+                    {% endif %}
+                </h2>
+                <div class="grid-container" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px;">
+                    <div class="metric-card">
+                        <h3>Resumen General</h3>
+                        <div class="metric-item">
+                            <span class="metric-label">Total de Intentos:</span>
+                            <span class="metric-value">{{ metrics.total_attempts }}</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Tasa de Éxito Inicial (Modelo):</span>
+                            <span class="metric-value success">{{ metrics.initial_success_rate }}</span>
+                        </div>
+                    </div>
+
+                    <div class="metric-card">
+                        <h3>Resultados Iniciales del Modelo</h3>
+                        <div class="metric-item">
+                            <span class="metric-label">Éxitos (Alta Confianza):</span>
+                            <span class="metric-value success">{{ metrics.initial_success }}</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Coincidencias Ambigüas:</span>
+                            <span class="metric-value warning">{{ metrics.initial_ambiguous }}</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Sin Coincidencia:</span>
+                            <span class="metric-value danger">{{ metrics.initial_no_match }}</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Errores de Procesamiento:</span>
+                            <span class="metric-value info">{{ metrics.initial_error }}</span>
+                        </div>
+                    </div>
+
+                    <div class="metric-card">
+                        <h3>Impacto del Feedback del Usuario</h3>
+                        <div class="metric-item">
+                            <span class="metric-label">Confirmados Correctos:</span>
+                            <span class="metric-value success">{{ metrics.confirmed_correct_by_feedback }}</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Rechazados (Identificación Incorrecta):</span>
+                            <span class="metric-value danger">{{ metrics.rejected_incorrect_by_feedback }}</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Tasa de Verdaderos Positivos (Feedback):</span>
+                            <span class="metric-value success">{{ metrics.true_positive_rate }}</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Tasa de Falsos Positivos (Feedback):</span>
+                            <span class="metric-value danger">{{ metrics.false_positive_rate }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        {% endfor %}
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block sidebar %}
+    {{ block.super }}
+{% endblock %}

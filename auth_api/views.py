@@ -15,8 +15,8 @@ from facial_auth_app.services import (
     _preprocess_for_embedding,
     embedding_model,
 )
-from facial_auth_app.models import FacialRecognitionProfile
-from auth_api.models import ClientApp, EndUser, EndUserFeedback, EndUserLoginAttempt
+# from facial_auth_app.models import FacialRecognitionProfile
+from auth_api.models import ClientApp, EndUser, EndUserFeedback, EndUserLoginAttempt, CustomUserLoginAttempt
 from auth_api.serializers import (
     UserSerializer,
     RegistrationSerializer,
@@ -43,7 +43,10 @@ class RegisterView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        serializer = RegistrationSerializer(data=request.data)
+        force_register = request.data.get("force_register", "false").lower() == "true"
+        serializer = RegistrationSerializer(
+            data=request.data, context={"force_register": force_register}
+        )
         try:
             serializer.is_valid(raise_exception=True)
             user = serializer.save()
@@ -74,6 +77,7 @@ class RegisterView(APIView):
                 {
                     "errors": {"face_image": str(e)},
                     "message": "Error en el registro facial",
+                    "detail": str(e),
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -118,44 +122,156 @@ class FaceLoginView(APIView):
     def post(self, request):
         serializer = FaceLoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        image_file = serializer.validated_data["face_image"]
+        image_file = request.FILES.get("face_image")
 
-        result = FacialRecognitionService.login_with_face(image_file)
-        status_code = result.get("status")
-
-        if status_code == "success":
-            user = result["user"]
-            tokens = get_tokens_for_user(user)
-            return Response(
-                {
-                    "status": "success",
-                    "user": UserSerializer(user).data,
-                    "tokens": tokens,
-                    "message": "Ingreso facial exitoso",
-                },
-                status=status.HTTP_200_OK,
-            )
-        elif status_code == "ambiguous_match":
-            # Devolvemos las posibles coincidencias para que el frontend las maneje
-            return Response(
-                {
-                    "status": "ambiguous_match",
-                    "matches": result["matches"],
-                    "detail": "Múltiples coincidencias, se requiere confirmación del usuario.",
-                },
-                status=status.HTTP_200_OK,
-            )
-        # En caso de 'no_match' o cualquier otro estado
-        return Response(
-            {"detail": "El rostro del usuario no se encuentra registrado"},
-            status=status.HTTP_401_UNAUTHORIZED,
+        # Crear un registro de intento de login para CustomUser
+        # El campo 'user' puede ser nulo inicialmente si el usuario no está autenticado
+        login_attempt = CustomUserLoginAttempt.objects.create(
+            user=request.user if request.user.is_authenticated else None,
+            initial_status="error",  # Default a error, se actualizará
         )
+        login_attempt.submitted_image = image_file
+        login_attempt.save()  # Guardar para que la imagen se suba
+
+        image_file.seek(0)  # Resetear el puntero del archivo después de guardarlo
+
+        try:
+            image_np = _bytes_to_array(image_file.read())
+            faces = _face_detect_and_align(image_np)
+
+            if not faces:
+                login_attempt.initial_status = "no_match"
+                login_attempt.save()
+                return Response(
+                    {"detail": "No se detectó ningún rostro en la imagen."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            processed_face = _preprocess_for_embedding(faces[0])
+            emb = embedding_model(processed_face)[0].numpy()
+            unknown = emb.tobytes()
+
+            matches_by_user = {}
+            # FILTRO CLAVE: Obtener solo usuarios que tienen autenticación facial habilitada
+            # y al menos un perfil de reconocimiento facial con un encoding no nulo.
+            # Usamos 'facial_profiles' que es el related_name de la ForeignKey.
+            users_with_face_auth = User.objects.filter(
+                face_auth_enabled=True,
+                facial_profiles__face_encoding__isnull=False,  # Usar el related_name correcto
+            ).distinct()  # Usar distinct para evitar usuarios duplicados si tienen múltiples perfiles
+
+            if not users_with_face_auth.exists():
+                login_attempt.initial_status = "no_match"
+                login_attempt.save()
+                return Response(
+                    {
+                        "detail": "No hay usuarios con autenticación facial habilitada o rostros registrados."
+                    },
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+
+            # Iterar a través de cada usuario y sus múltiples perfiles faciales
+            for user_obj in users_with_face_auth:
+                # Obtener todos los perfiles faciales activos para el usuario actual
+                # Asegúrate de que 'is_active' exista en tu modelo FacialRecognitionProfile
+                user_profiles = user_obj.facial_profiles.filter(
+                    is_active=True, face_encoding__isnull=False
+                )
+
+                for profile in user_profiles:
+                    face_encoding = profile.face_encoding
+
+                    match, dist = FacialRecognitionService.compare_faces(
+                        face_encoding,
+                        unknown,
+                        threshold=0.25,  # Umbral genérico para CustomUser o definir uno en CustomUser
+                    )
+                    if match:
+                        user_id = user_obj.id
+                        # Si este usuario ya es una posible coincidencia, mantenemos la mejor (distancia más pequeña)
+                        if (
+                            user_id not in matches_by_user
+                            or dist < matches_by_user[user_id]["distance"]
+                        ):
+                            matches_by_user[user_id] = {
+                                "user": user_obj,
+                                "distance": dist,
+                            }
+
+            if not matches_by_user:
+                login_attempt.initial_status = "no_match"
+                login_attempt.save()
+                return Response(
+                    {"detail": "Rostro no reconocido para ningún usuario del sistema."},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+
+            matches = sorted(matches_by_user.values(), key=lambda x: x["distance"])
+            best_match = matches[0]
+
+            login_attempt.best_match_user = best_match["user"]
+            login_attempt.best_match_distance = best_match["distance"]
+
+            # Definir umbrales para CustomUser (pueden ser fijos o configurables)
+            CUSTOMUSER_CONFIDENCE_THRESHOLD = 0.18
+            # CUSTOMUSER_FALLBACK_THRESHOLD = 0.25 # Ya usado en el filtro de umbral
+
+            if best_match["distance"] <= CUSTOMUSER_CONFIDENCE_THRESHOLD:
+                login_attempt.initial_status = "success"
+                # is_verified_and_correct se establecerá a True solo después del feedback 'correcto'
+                login_attempt.save()
+
+                user_data = UserSerializer(best_match["user"]).data
+                tokens = get_tokens_for_user(best_match["user"])
+
+                return Response(
+                    {
+                        "status": "success",
+                        "user": user_data,
+                        "tokens": tokens,
+                        "message": "Ingreso facial exitoso. Por favor, confirma tu identidad.",
+                        "confidence": round(1 - best_match["distance"], 3),
+                        "login_attempt_id": login_attempt.id,  # Devolver el ID del intento
+                    },
+                    status=status.HTTP_200_OK,
+                )
+            else:
+                login_attempt.initial_status = "ambiguous_match"
+                login_attempt.save()
+                ambiguous_matches = [
+                    {
+                        "id": m["user"].id,
+                        "username": m["user"].username,
+                        "full_name": m["user"].full_name,
+                        "distance": m["distance"],
+                    }
+                    for m in matches
+                ]
+                return Response(
+                    {
+                        "status": "ambiguous_match",
+                        "matches": ambiguous_matches,
+                        "detail": "Múltiples coincidencias, se requiere confirmación del usuario.",
+                        "login_attempt_id": login_attempt.id,  # Devolver el ID del intento
+                    },
+                    status=status.HTTP_200_OK,
+                )
+        except Exception as e:
+            import traceback
+
+            traceback.print_exc()
+            login_attempt.initial_status = "error"
+            login_attempt.save()
+            return Response(
+                {"detail": f"Error interno del servidor: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
 
 class FaceLoginFeedbackView(APIView):
     """
-    Nuevo endpoint para manejar la retroalimentación del usuario.
-    Recibe la imagen y el ID del usuario real para actualizar el sistema.
+    Endpoint para manejar la retroalimentación del usuario del sistema principal (CustomUser).
+    Recibe la imagen, el ID del usuario real y la decisión de feedback.
     """
 
     permission_classes = [permissions.AllowAny]
@@ -164,24 +280,49 @@ class FaceLoginFeedbackView(APIView):
         serializer = FaceLoginFeedbackSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        user_id = serializer.validated_data["user_id"]
-        password = serializer.validated_data["password"]
-        face_image = serializer.validated_data["face_image"]
+        login_attempt_id = serializer.validated_data.get("login_attempt_id")
+        feedback_decision = serializer.validated_data.get("feedback_decision")
+        user_id = serializer.validated_data.get("user_id")
+        password = serializer.validated_data.get("password")
+        face_image = request.FILES.get(
+            "face_image"
+        )  # Usar request.FILES para la imagen
 
         try:
-            user = User.objects.get(id=user_id)
-        except User.DoesNotExist:
+            login_attempt = CustomUserLoginAttempt.objects.get(id=login_attempt_id)
+        except CustomUserLoginAttempt.DoesNotExist:
             return Response(
-                {"detail": "Usuario no encontrado"}, status=status.HTTP_404_NOT_FOUND
-            )
-
-        if not user.check_password(password):
-            return Response(
-                {"detail": "Contraseña incorrecta"}, status=status.HTTP_401_UNAUTHORIZED
+                {"detail": "Intento de login no encontrado."},
+                status=status.HTTP_404_NOT_FOUND,
             )
 
         with transaction.atomic():
-            # Llama al servicio para procesar y guardar la imagen de feedback
+            if feedback_decision == "incorrecto":
+                login_attempt.user_feedback = "incorrecto"
+                login_attempt.is_verified_and_correct = False
+                login_attempt.save()
+                return Response(
+                    {"message": "Feedback de 'incorrecto' registrado."},
+                    status=status.HTTP_200_OK,
+                )
+
+            # Si feedback_decision es 'correcto', user_id, password y face_image son obligatorios
+            # (validado por el serializer)
+            try:
+                user = User.objects.get(id=user_id)
+            except User.DoesNotExist:
+                return Response(
+                    {"detail": "Usuario no encontrado."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            if not user.check_password(password):
+                return Response(
+                    {"detail": "Contraseña incorrecta."},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+
+            # Procesar y almacenar feedback para CustomUser
             success = FacialRecognitionService.process_and_store_feedback(
                 user, face_image
             )
@@ -192,7 +333,12 @@ class FaceLoginFeedbackView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # Autenticación exitosa
+            login_attempt.confirmed_by_feedback = user
+            login_attempt.user = user  # Establecer el usuario real que intentó
+            login_attempt.user_feedback = "correcto"
+            login_attempt.is_verified_and_correct = True
+            login_attempt.save()
+
             tokens = get_tokens_for_user(user)
             return Response(
                 {
