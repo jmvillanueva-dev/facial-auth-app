@@ -15,7 +15,7 @@ from facial_auth_app.services import (
     _preprocess_for_embedding,
     embedding_model,
 )
-# from facial_auth_app.models import FacialRecognitionProfile
+
 from auth_api.models import ClientApp, EndUser, EndUserFeedback, EndUserLoginAttempt, CustomUserLoginAttempt
 from auth_api.serializers import (
     UserSerializer,
@@ -25,7 +25,6 @@ from auth_api.serializers import (
     EndUserRegistrationSerializer,
     FaceLoginFeedbackSerializer,
     EndUserSerializer,
-    EndUserFaceFeedbackSerializer,
 )
 
 User = get_user_model()
