@@ -1,7 +1,7 @@
 <h1 align="center">Facial-auth-app</h1>
 
 <p align="center">
-  <img src="https://img.artiversehub.ai/2025/06/03/c83841258fcd4250bb0ce7a24391ec35.webp" alt="Demo de la app" width="400">
+  <img src="https://i.postimg.cc/6psSG0Pm/Logo-IA-White.jpg" alt="logo de la app" width="400">
 </p>
 
 Aplicación de autenticación facial desarrollada con Django y Django REST Framework. Este proyecto permite autenticar usuarios mediante reconocimiento facial, integrando modelos de aprendizaje profundo, procesamiento de imágenes y una API REST para facilitar su integración.
@@ -252,3 +252,7 @@ Este archivo define los endpoints disponibles en la API para manejar tanto usuar
 📌 Las rutas están organizadas para cubrir tanto el **registro y autenticación facial** como la **gestión de usuarios y apps cliente**.  
 Todas las operaciones están protegidas y requieren autenticación apropiada.
 
+### 👤 Autores
+- [Adrian Caiza](https://github.com/adrian-caiza)
+- [Erick Nuñez](https://github.com/erick-nu)
+- [Jhonny Villanueva M.](https://github.com/jmvillanueva-dev)
