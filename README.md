@@ -1,7 +1,7 @@
 <h1 align="center">Facial-auth-app</h1>
 
 <p align="center">
-  <img src="https://i.postimg.cc/6psSG0Pm/Logo-IA-White.jpg" alt="logo de la app" width="400">
+  <img src="https://i.postimg.cc/t4yCQRWL/Backend.png" alt="logo de la app" width="400">
 </p>
 
 Aplicación de autenticación facial desarrollada con Django y Django REST Framework. Este proyecto permite autenticar usuarios mediante reconocimiento facial, integrando modelos de aprendizaje profundo, procesamiento de imágenes y una API REST para facilitar su integración.
